@@ -1,0 +1,1531 @@
+---
+title: "r-python-ex3"
+author: "Ajinkya Deshmukh"
+format: html
+editor: visual
+---
+
+# **Classification: Basic Concepts and Techniques**
+
+## **Install packages**
+
+```{r message=FALSE, warning=FALSE}
+if(!require(pacman))
+  install.packages("pacman")
+
+pacman::p_load(tidyverse, rpart, rpart.plot, caret, 
+  lattice, FSelector, sampling, pROC, mlbench)
+```
+
+## Introduction
+
+-   Learning a form's predictive function is the aim of the machine learning task of classification.
+
+-   **y = f(x)**
+
+-   where **x** is called the attribute set and **y** the class label. Features are the components of the attribute set that characterize an item. Any scale (nominal, interval, etc.) can be used to measure these characteristics. One nominal property is the class label. If the attribute is binary, the issue is referred to as a binary classification issue.
+
+-   Training data with available features and the right class label is used to train the classification model. It is referred to as a supervised learning problem for this reason.
+
+-   Regression is a similar supervised learning problem in which is a number rather than a label. Since practically every introductory statistics school teaches linear regression, we won't discuss it here even though it is a widely common supervised learning model.
+
+## ** The Zoo Dataset**
+
+We will use the Zoo dataset, which is part of the R package mlbench (you might need to install it), to illustrate categorization. Zoo dataset: hair, feathers, eggs, milk, airborne, aquatic, predator, toothed, backbone, breathes, poisonous, fins, legs, tail, domestic, catsize, type; 17 (mainly logical) variables for 101 species in a data frame with 17 columns. The feature vector is represented by the first sixteen columns, and the class label is found in the final column, type. We create a tidyverse tibble (optional) from the data frame.
+
+```{r}
+data(Zoo)
+head(Zoo)
+```
+
+An updated and user-friendly substitute for the conventional data frame in R is the tibble package. An improved variant of R's conventional data frame, the tibble package created a new class of data structure called a tibble. The tidyverse ecosystem includes tibbles, which have gained popularity because of their constant behavior and ease of use.
+
+```{r}
+library(tidyverse)
+as_tibble(Zoo, rownames = "animal")
+```
+
+```{r}
+Zoo <- Zoo |>
+  mutate(across(where(is.logical), factor, levels = c(TRUE, FALSE))) |>  #  converting logical columns to factors with "TRUE" and "FALSE" levels 
+  
+  mutate(across(where(is.character), factor))
+```
+
+```{r}
+summary(Zoo)
+```
+
+## **Decision Trees**
+
+-   The Gini index is used by Recursive Partitioning, which is comparable to CART, to determine splitting and early halting (pre-pruning).
+
+```{r}
+library(rpart)
+```
+
+### **Create Tree With Default Settings (uses pre-pruning)**
+
+```{r}
+tree_default <- Zoo |> 
+  rpart(type ~ ., data = _)
+tree_default
+```
+
+Plotting
+
+```{r warning=FALSE, message=FALSE}
+library(rpart.plot)
+rpart.plot(tree_default, extra = 2)
+```
+
+### **Create a Full Tree**
+
+-   In order to produce a complete tree, we set the minimum number of observations in a node required to split to the least value of 2 and set the complexity parameter cp to 0 (split even if it does not improve the tree). Take note: training data was overfit by entire trees!
+
+```{r}
+tree_full <- Zoo |> 
+  rpart(type ~ . , data = _, 
+        control = rpart.control(minsplit = 2, cp = 0))
+rpart.plot(tree_full, extra = 2, 
+           roundint=FALSE,
+            box.palette = list("Gy", "Gn", "Bu", "Bn", 
+                               "Or", "Rd", "Pu")) # specify 7 colors
+```
+
+It is implied that no cost complexity pruning is used when cp is set to 0. To put it another way, the tree is allowed to grow until it exactly fits the training set, which could result in an overly complex, overfitted tree.
+
+```{r}
+tree_full
+```
+
+Training error on tree with pre-pruning
+
+```{r}
+predict(tree_default, Zoo) |> head ()
+```
+
+```{r}
+pred <- predict(tree_default, Zoo, type="class")
+head(pred)
+```
+
+One performance monitoring tool for machine learning and classification tasks is a confusion matrix. By adding up the number of true positive, true negative, false positive, and false negative predictions the model made, it is possible to assess how accurate a classification algorithm is.
+
+```{r}
+confusion_table <- with(Zoo, table(type, pred))
+confusion_table
+```
+
+```{r}
+# Calculate the total number of correct predictions
+correct <- confusion_table |> diag() |> sum()
+correct
+```
+
+```{r}
+# Calculate the total number of errors
+error <- confusion_table |> sum() - correct
+error
+```
+
+```{r}
+accuracy <- correct / (correct + error)
+accuracy
+```
+
+Use a function for accuracy
+
+```{r}
+accuracy <- function(truth, prediction) {
+    tbl <- table(truth, prediction)
+    sum(diag(tbl))/sum(tbl)
+}
+
+accuracy(Zoo |> pull(type), pred)
+```
+
+Training error of the full tree
+
+```{r}
+accuracy(Zoo |> pull(type), 
+         predict(tree_full, Zoo, type = "class"))
+```
+
+```{r}
+library(caret)
+confusionMatrix(data = pred, 
+                reference = Zoo |> pull(type))
+```
+
+### **Make Predictions for New Data**
+
+Make up my own animal: A lion with feathered wings
+
+```{r}
+my_animal <- tibble(hair = TRUE, feathers = TRUE, eggs = FALSE,
+  milk = TRUE, airborne = TRUE, aquatic = FALSE, predator = TRUE,
+  toothed = TRUE, backbone = TRUE, breathes = TRUE, venomous = FALSE,
+  fins = FALSE, legs = 4, tail = TRUE, domestic = FALSE,
+  catsize = FALSE, type = NA)
+```
+
+Fix columns to be factors like in the training set.
+
+```{r}
+my_animal <- my_animal |> 
+  mutate(across(where(is.logical), factor, levels = c(TRUE, FALSE)))
+my_animal
+```
+
+Make a prediction using the default tree
+
+```{r}
+predict(tree_default , my_animal, type = "class")
+```
+
+## **Model Evaluation with Caret**
+
+The caret package in R offers a thorough framework for training, fine-tuning, and assessing models. It provides a range of features and resources to make the process of creating machine learning models more efficient.
+
+```{r}
+library(caret)
+```
+
+```{r}
+set.seed(2000)
+```
+
+### **Hold out Test Data**
+
+Test data is kept separate and used just for model testing; it is not utilized throughout the model-building process. Here, we divide the data into 20% for testing and 80% for training.
+
+```{r}
+inTrain <- createDataPartition(y = Zoo$type, p = .8, list = FALSE)
+Zoo_train <- Zoo |> slice(inTrain)
+```
+
+```{r}
+Zoo_test <- Zoo |> slice(-inTrain)
+```
+
+### **Learn a Model and Tune Hyperparameters on the Training Data**
+
+The caret package unifies training and validation into a single function, train(), to simplify the hyperparameter tweaking process. This function allows you to evaluate the effectiveness of various hyperparameter setups by internally dividing the data into training and validation sets. The testing strategy is specified using the trainControl function.
+
+Using accuracy as the criterion for model selection, train() optimizes the cp parameter (tree complexity) in the context of the rpart model. Because there isn't much data available, I've set minsplit to 2. It's important to remember that parameters that are meant to be tuned---in this case, cp---need to be set up using a data.frame that is passed as an input to the tuneGrid function. It won't matter whether you put them in the control argument.
+
+```{r}
+fit <- Zoo_train |>
+  train(type ~ .,
+    data = _ ,
+    method = "rpart",
+    control = rpart.control(minsplit = 2),
+    trControl = trainControl(method = "cv", number = 10),
+    tuneLength = 5)
+
+fit
+```
+
+Because of its 100% accuracy on the training data, the model with cp = 0 was chosen as the final model in this instance.
+
+```{r}
+rpart.plot(fit$finalModel, extra = 2,
+  box.palette = list("Gy", "Gn", "Bu", "Bn", "Or", "Rd", "Pu"))
+```
+
+```{r}
+varImp(fit)
+```
+
+The function varImp, found in the R caret package, calculates variable significance scores for a certain machine learning model.
+
+```{r}
+imp <- varImp(fit, compete = FALSE)
+imp
+```
+
+```{r}
+ggplot(imp)
+```
+
+With a score of 100.00, milk False has the highest importance, and feathers False has a score of 55.69, showing that it is also an important prior
+
+**Testing: Confusion Matrix and Confidence Interval for Accuracy**
+
+Use the best model on the test data
+
+```{r}
+pred <- predict(fit, newdata = Zoo_test)
+pred
+```
+
+Numerous assessment metrics, including kappa, accuracy, and confidence intervals, are computed using the Caret **confusionMatrix()** function. To build a confusion matrix based on the generalization error, you must use distinct test data.
+
+```{r}
+confusionMatrix(data = pred, 
+                ref = Zoo_test |> pull(type))
+```
+
+The actual values from the "type" column of the Zoo_test dataset are extracted using the **pull(type)** function.
+
+With an accuracy of 0.94 and a Kappa of 0.92, the model is considered excellent performing.
+
+## **Model Comparison**
+
+Decision trees and k-nearest neighbors (kNN) classifiers will be compared. In order to compare the various models using precisely the same folds, we will establish a fixed sampling strategy consisting of ten folds. During training, it is indicated as TrControl.
+
+```{r}
+train_index <- createFolds(Zoo_train$type, k = 10)
+```
+
+Build models:
+
+1.  rpart
+
+```{r}
+rpartFit <- Zoo_train |> 
+  train(type ~ .,
+        data = _,
+        method = "rpart",
+        tuneLength = 10,
+        trControl = trainControl(method = "cv", indexOut = train_index)
+  )
+```
+
+2.  KNN
+
+```{r}
+knnFit <- Zoo_train |> 
+  train(type ~ .,
+        data = _,
+        method = "knn",
+        preProcess = "scale",
+          tuneLength = 10,
+          trControl = trainControl(method = "cv", indexOut = train_index)
+  )
+```
+
+Compare accuracy over all folds
+
+```{r}
+resamps <- resamples(list(
+        CART = rpartFit,
+        kNearestNeighbors = knnFit
+        ))
+
+summary(resamps)
+```
+
+```{r}
+library(lattice)
+bwplot(resamps, layout = c(3, 1))
+```
+
+With a few exception folds, we observe that kNN regularly outperforms CART on the folds.
+
+```{r}
+difs <- diff(resamps)
+difs
+```
+
+```{r}
+summary(difs)
+```
+
+## **Feature Selection and Feature Preparation**
+
+Feature selection is the process of removing superfluous or unnecessary features (columns) from the dataset and selecting a subset of the most pertinent and instructive ones. This reduces the dimensionality of the dataset and enhances model performance.
+
+```{r}
+library(FSelector)
+```
+
+```{r}
+weights <- Zoo_train |> 
+  chi.squared(type ~ ., data = _) |>
+  as_tibble(rownames = "feature") |>
+  arrange(desc(attr_importance))
+
+weights
+```
+
+plot importance in descending order
+
+```{r}
+ggplot(weights,
+  aes(x = attr_importance, y = reorder(feature, attr_importance))) +
+  geom_bar(stat = "identity") +
+  xlab("Importance score") + 
+  ylab("Feature")
+```
+
+Get 5 best features
+
+cutoff.k is used for selecting a specified number of top features based on their importance.
+
+```{r}
+subset <- cutoff.k(weights |> 
+                   column_to_rownames("feature"), 5)
+subset
+```
+
+**kNearestNeighbors** is performing better than CART.
+
+Use only the best 5 features to build a model 
+
+```{r}
+f <- as.simple.formula(subset, "type") # function used to generate a formula in R
+f
+```
+
+```{r}
+m <- Zoo_train |> rpart(f, data = _)
+rpart.plot(m, extra = 2, roundint = FALSE)
+```
+
+Numerous other methods exist for determining univariate significance scores (see to package FSelector). A few of them (as well) are employed by continuous features. One illustration is the decision tree induction process's information gain ratio, which is based on entropy.
+
+```{r}
+Zoo_train |> 
+  gain.ratio(type ~ ., data = _) |>
+  as_tibble(rownames = "feature") |>
+  arrange(desc(attr_importance))
+```
+
+**gain.ratio** function calculates the gain ratio for each predictor variab
+
+### **Feature Subset Selection**
+
+Features are frequently connected, hence it is not ideal to determine each feature's relevance separately. Greedy search heuristics are one option.
+
+```{r}
+Zoo_train |> 
+  cfs(type ~ ., data = _)
+```
+
+In black-box feature selection, a score that needs to be maximized is determined by an evaluator function known as the "black box." Firstly, we design an evaluation function that takes a subset of features, develops a model, and returns a quality score. Here, we take the mean over five bootstrap samples (method = "cv" can also be used as an alternative), without any tuning (for speed), and use the average accuracy as the score.
+
+```{r}
+evaluator <- function(subset) {
+  model <- Zoo_train |> 
+    train(as.simple.formula(subset, "type"),
+          data = _,
+          method = "rpart",
+          trControl = trainControl(method = "boot", number = 5),
+          tuneLength = 0)
+  results <- model$resample$Accuracy
+  cat("Trying features:", paste(subset, collapse = " + "), "\n")
+  m <- mean(results)
+  cat("Accuracy:", round(m, 2), "\n\n")
+  m
+}
+```
+
+Start with all features
+
+```{r}
+features <- Zoo_train |> colnames() |> setdiff("type")
+```
+
+```{r}
+subset <- backward.search(features, evaluator)
+```
+
+```{r}
+subset <- forward.search(features, evaluator)
+```
+
+```{r}
+subset <- best.first.search(features, evaluator)
+```
+
+```{r}
+subset <- hill.climbing.search(features, evaluator)
+```
+
+### **Using Dummy Variables for Factors**
+
+The categories of a categorical variable are represented by binary variables (0 or 1), often known as dummy variables. A matching dummy variable is made for every category.
+
+```{r}
+tree_predator <- Zoo_train |> 
+  rpart(predator ~ type, data = _)
+rpart.plot(tree_predator, extra = 2, roundint = FALSE)
+```
+
+```{r}
+Zoo_train_dummy <- as_tibble(class2ind(Zoo_train$type)) |> 
+  mutate(across(everything(), as.factor)) |>
+  add_column(predator = Zoo_train$predator)
+Zoo_train_dummy
+```
+
+```{r}
+tree_predator <- Zoo_train_dummy |> 
+  rpart(predator ~ ., 
+        data = _,
+        control = rpart.control(minsplit = 2, cp = 0.01))
+rpart.plot(tree_predator, roundint = FALSE)
+```
+
+```{r}
+fit <- Zoo_train |> 
+  train(predator ~ type, 
+        data = _, 
+        method = "rpart",
+        control = rpart.control(minsplit = 2),
+        tuneGrid = data.frame(cp = 0.01))
+fit
+```
+
+```{r}
+rpart.plot(fit$finalModel, extra = 2)
+```
+
+## **Class Imbalance**
+
+It is difficult for classifiers to learn from data when there are a lot more observations for one class (referred to as the majority class). We refer to this as the class imbalance issue.
+
+```{r}
+library(rpart)
+library(rpart.plot)
+data(Zoo, package="mlbench")
+```
+
+Class distribution
+
+```{r}
+ggplot(Zoo, aes(y = type)) + geom_bar()
+```
+
+We wish to determine whether an animal is a reptile in order to produce an unbalanced problem. Firstly, we convert the task to a binary reptile/non-reptile classification problem by changing the class variable.
+
+```{r}
+Zoo_reptile <- Zoo |> 
+  mutate(type = factor(Zoo$type == "reptile", 
+                       levels = c(FALSE, TRUE),
+                       labels = c("nonreptile", "reptile")))
+```
+
+```{r}
+summary(Zoo_reptile)
+```
+
+```{r}
+ggplot(Zoo_reptile, aes(y = type)) + geom_bar()
+```
+
+The "type" variable's distribution can be seen using the bar chart.
+
+Produce training and test data. To ensure that the test set has some samples of the uncommon reptile class, I employ a 50/50 split in this instance.
+
+```{r}
+set.seed(1234)
+
+inTrain <- createDataPartition(y = Zoo_reptile$type, p = .5, list = FALSE)
+training_reptile <- Zoo_reptile |> slice(inTrain)
+testing_reptile <- Zoo_reptile |> slice(-inTrain)
+```
+
+divides the "Zoo_reptile" dataset in half, creating training and testing datasets (training_reptile and testing_reptile, respectively).
+
+### **Option 1: Use the Data As Is and Hope For The Best**
+
+```{r}
+fit <- training_reptile |> 
+  train(type ~ .,
+        data = _,
+        method = "rpart",
+        trControl = trainControl(method = "cv"))
+```
+
+```{r}
+fit
+```
+
+```{r}
+rpart.plot(fit$finalModel, extra = 2)
+```
+
+Everything is predicted by the tree to be non-reptile. Examine the mistake on the test dataset.
+
+```{r}
+confusionMatrix(data = predict(fit, testing_reptile),
+                ref = testing_reptile$type, positive = "reptile")
+```
+
+### **Option 2: Balance Data With Resampling**
+
+For the purpose of oversampling the minority/positive class, we employ stratified sampling with replacement.
+
+```{r}
+library(sampling)
+set.seed(1000) # for repeatability
+
+id <- strata(training_reptile, stratanames = "type", size = c(50, 50), method = "srswr")
+training_reptile_balanced <- training_reptile |> 
+  slice(id$ID_unit)
+table(training_reptile_balanced$type)
+```
+
+Here we are using 50 observations from each stratum.
+
+```{r}
+fit <- training_reptile_balanced |> 
+  train(type ~ .,
+        data = _,
+        method = "rpart",
+        trControl = trainControl(method = "cv"),
+        control = rpart.control(minsplit = 5))
+
+fit
+```
+
+```{r}
+rpart.plot(fit$finalModel, extra = 2)
+```
+
+Check on the unbalanced testing data by confusion matrix:
+
+```{r}
+confusionMatrix(data = predict(fit, testing_reptile),
+                ref = testing_reptile$type, positive = "reptile")
+```
+
+```{r}
+id <- strata(training_reptile, stratanames = "type", size = c(50, 100), method = "srswr")
+training_reptile_balanced <- training_reptile |> 
+  slice(id$ID_unit)
+table(training_reptile_balanced$type)
+```
+
+To construct a balanced training dataset, all strata with "50" in the size parameter receive 50 randomly sampled observations, and all strata with "100" in the size parameter receive 100 randomly sampled observations.
+
+```{r}
+fit <- training_reptile_balanced |> 
+  train(type ~ .,
+        data = _,
+        method = "rpart",
+        trControl = trainControl(method = "cv"),
+        control = rpart.control(minsplit = 5))
+
+confusionMatrix(data = predict(fit, testing_reptile),
+                ref = testing_reptile$type, positive = "reptile")
+```
+
+### **Option 3: Build A Larger Tree and use Predicted Probabilities**
+
+Increase the model's complexity, requiring a smaller dataset for node splitting. In addition, I use the tuning metric known as AUC, or Area Under the ROC Curve. Determining the two-class summary function is crucial. It's important to note that the tree is still working to improve accuracy on the dataset as opposed to AUC. Additionally, I've turned on class probabilities because I plan to use them to predict probabilities later on.
+
+```{r}
+fit <- training_reptile |> 
+  train(type ~ .,
+        data = _,
+        method = "rpart",
+        tuneLength = 10,
+        trControl = trainControl(method = "cv",
+        classProbs = TRUE,  ## necessary for predict with type="prob"
+        summaryFunction=twoClassSummary),  ## necessary for ROC
+        metric = "ROC",
+        control = rpart.control(minsplit = 3))
+```
+
+```{r}
+fit
+```
+
+```{r}
+rpart.plot(fit$finalModel, extra = 2)
+```
+
+confusion matrix:
+
+```{r}
+confusionMatrix(data = predict(fit, testing_reptile),
+                ref = testing_reptile$type, positive = "reptile")
+```
+
+#### Create A Biased Classifier
+
+```{r}
+prob <- predict(fit, testing_reptile, type = "prob")
+tail(prob)
+```
+
+You can assess how confident the model is in its predictions for those specific data by looking at the probabilities associated with each class in each row.
+
+```{r}
+pred <- as.factor(ifelse(prob[,"reptile"]>=0.01, "reptile", "nonreptile"))
+
+confusionMatrix(data = pred,
+                ref = testing_reptile$type, positive = "reptile")
+```
+
+#### Plot the ROC Curve
+
+We can use a Receiver Operating Characteristic (ROC) curve given our binary classification problem and a classifier that predicts the likelihood of each observation being a yes. This curve is made up of different cutoff points for the expected probabilities, which are then joined by a line. The performance of the classifier is indicated by a single statistic, the area under this curve (the closer to one, the better).
+
+```{r}
+library("pROC")
+r <- roc(testing_reptile$type == "reptile", prob[,"reptile"])
+```
+
+```{r}
+r
+```
+
+```{r}
+ggroc(r) + geom_abline(intercept = 1, slope = 1, color = "darkgrey")
+```
+
+An AUC-ROC value of 0.766 suggests that the model performs rather well.
+
+### **Option 4: Use a Cost-Sensitive Classifier**
+
+A cost matrix can be used by the rpart implementation of CART to decide which parts to split (as parameter loss). The matrix is formatted as TP FP FN. TN, TP, and TN must both equal 0. We produce FN at a high cost (100).
+
+```{r}
+cost <- matrix(c(
+  0,   1,
+  100, 0
+), byrow = TRUE, nrow = 2)
+cost
+```
+
+```{r}
+fit <- training_reptile |> 
+  train(type ~ .,
+        data = _,
+        method = "rpart",
+        parms = list(loss = cost),
+        trControl = trainControl(method = "cv"))
+```
+
+```{r}
+fit
+```
+
+```{r}
+rpart.plot(fit$finalModel, extra = 2)
+```
+
+```{r}
+confusionMatrix(data = predict(fit, testing_reptile),
+                ref = testing_reptile$type, positive = "reptile")
+```
+
+# **Classification: Alternative Techniques**
+
+## **Install packages**
+
+```{r}
+if(!require(pacman))
+  install.packages("pacman")
+
+pacman::p_load(
+  C50,                # C5.0 Decision Trees and Rule-Based Models
+  caret,              # Classification and Regression Training
+  e1071,              # Misc Functions of the Department of Statistics (e1071), TU Wien
+  keras,              # R Interface to 'Keras'
+  kernlab,            # Kernel-Based Machine Learning Lab
+  lattice,            # Trellis Graphics for R
+  MASS,               # Support Functions and Datasets for Venables and Ripley's MASS
+  mlbench,            # Machine Learning Benchmark Problems
+  nnet,               # Feedforward Neural Networks and Multinomial Log-Linear Models
+  palmerpenguins,     # Palmer Archipelago (Antarctica) Penguin Data
+  party,              # A Laboratory for Recursive Partytioning
+  partykit,           # A Toolkit for Recursive Partytioning
+  randomForest,       # Breiman and Cutler's Random Forests for Classification and Regression
+  rpart,              # Recursive partitioning models
+  RWeka,              # R/Weka Interface
+  scales,             # Scale Functions for Visualization
+  tidymodels,         # Tidy machine learning framework
+  tidyverse,          # Tidy data wrangling and visualization
+  xgboost             # Extreme Gradient Boosting
+)
+```
+
+Show fewer digits
+
+```{r}
+options(digits=3) # Controls how many decimal places are displayed
+```
+
+## **Training and Test Data**
+
+We will be using the Zoo dataset, which can be found in the R package mlbench (which you may need to install if it isn't already). This dataset describes 101 animals using 17 variables, the most of which are logical. The information is organized in a data frame with 17 columns that correspond to different features like hair, feathers, eggs, milk, and more (such as legs, predator, and type). Alternatively, we may use the tidyverse framework to transform the data frame into a tibble.
+
+```{r}
+data(Zoo, package="mlbench")
+Zoo <- as.data.frame(Zoo)
+Zoo |> glimpse()
+```
+
+Test data must be kept aside specifically for testing the model once it has been developed; it is not used during the model-building process. I train with 80% of this here.
+
+```{r}
+set.seed(123)  # for reproducibility
+inTrain <- createDataPartition(y = Zoo$type, p = .8)[[1]]
+Zoo_train <- dplyr::slice(Zoo, inTrain)
+Zoo_test <- dplyr::slice(Zoo, -inTrain)
+```
+
+## **Fitting Different Classification Models to the Training Data**
+
+Establish a fixed sampling strategy (10-folds) so that we may subsequently compare the fitted models.
+
+```{r}
+train_index <- createFolds(Zoo_train$type, k = 10)
+```
+
+### **Conditional Inference Tree (Decision Tree)**
+
+A conditional inference tree is a different kind of decision tree that divides the dependent variables recursively based on correlation values.
+
+```{r}
+ctreeFit <- Zoo_train |> train(type ~ .,
+  method = "ctree",
+  data = _,
+    tuneLength = 5,
+    trControl = trainControl(method = "cv", indexOut = train_index))
+ctreeFit
+```
+
+The accuracy and kappa of the conditional inference tree model were quite high, and this level of performance was attained by setting the hyperparameter "mincriterion" to 0.99.
+
+```{r}
+plot(ctreeFit$finalModel)
+```
+
+### **C 4.5 Decision Tree**
+
+A popular classification algorithm in machine learning is the "C4.5" decision tree algorithm, sometimes referred to as C5.0. It is an improvement on the ID3 (Iterative Dichotomiser 3) algorithm and was created by Ross Quinlan. Regression and classification tasks are both performed with C4.5.
+
+```{r}
+C45Fit <- Zoo_train |> train(type ~ .,
+  method = "J48",
+  data = _,
+    tuneLength = 5,
+    trControl = trainControl(method = "cv", indexOut = train_index))
+C45Fit
+```
+
+The best model was determined by looking at the model with the highest Accuracy value.**C = 0.133** and **M = 1** were the model's final values.
+
+```{r}
+C45Fit$finalModel
+```
+
+### **K-Nearest Neighbors**
+
+Since kNN uses Euclidean distance, the data must first be scaled or standardized. In this case, all other variables are measured between 0 and 1, and legs are measured between 0 and 6. Scaling can be done immediately in train by using the preProcess = "scale" parameter for preprocessing.
+
+```{r}
+knnFit <- Zoo_train |> train(type ~ .,
+  method = "knn",
+  data = _,
+  preProcess = "scale",
+    tuneLength = 5,
+  tuneGrid=data.frame(k = 1:10),
+    trControl = trainControl(method = "cv", indexOut = train_index))
+knnFit
+```
+
+Cross-validation is used to evaluate the KNN classification model. It performs preprocessing by scaling the data and investigating various values for the "k" parameter.
+
+```{r}
+knnFit$finalModel
+```
+
+### **PART (Rule-based classifier)**
+
+"Partial C 4.5," or PART for short, is an expansion of the widely used C4.5 decision tree method. PART is a classification task-specific tool that comes in handy when working with datasets that have noisy or missing data.
+
+```{r}
+rulesFit <- Zoo_train |> train(type ~ .,
+  method = "PART",
+  data = _,
+  tuneLength = 5,
+  trControl = trainControl(method = "cv", indexOut = train_index))
+rulesFit
+```
+
+We have included the accuracy and Kappa statistics for each combination of "threshold" and "pruned" settings. Here, it is 1 in every circumstance. The model's final values were trimmed = yes and threshold = 0.5.
+
+```{r}
+rulesFit$finalModel
+```
+
+### **Linear Support Vector Machines**
+
+For problems involving regression and classification, one kind of supervised machine learning technique is called a linear support vector machine (SVM). The goal of linear support vector machines (SVM) in classification is to locate the ideal hyperplane in the feature space that best divides various classes. Particularly in high-dimensional spaces, this hyperplane is a reliable and efficient classifier since it maximizes the margin between the classes.
+
+```{r}
+svmFit <- Zoo_train |> train(type ~.,
+  method = "svmLinear",
+  data = _,
+    tuneLength = 5,
+    trControl = trainControl(method = "cv", indexOut = train_index))
+svmFit
+```
+
+The model obtained perfect Kappa (0.97) and great accuracy (0.97), according to the results.
+
+```{r}
+svmFit$finalModel
+```
+
+### **Random Forest**
+
+An ensemble learning technique called Random Forest is applied to both regression and classification problems. During training, it builds a large number of decision trees, and it produces a class that is the mean prediction (regression) or the mode of the classes (classification) of the individual trees.
+
+```{r}
+randomForestFit <- Zoo_train |> train(type ~ .,
+  method = "rf",
+  data = _,
+    tuneLength = 5,
+    trControl = trainControl(method = "cv", indexOut = train_index))
+randomForestFit
+```
+
+```{r}
+randomForestFit$finalModel
+```
+
+### **Gradient Boosted Decision Trees (xgboost)**
+
+The eXtreme Gradient Boosting, or XGBoost, is a scalable and optimized gradient boosting machine implementation. This machine learning algorithm is a member of the ensemble learning technique family. In particular, XGBoost is well-known for its speed and effectiveness and is utilized for both regression and classification problems.
+
+```{r}
+xgboostFit <- Zoo_train |> train(type ~ .,
+  method = "xgbTree",
+  data = _,
+  tuneLength = 5,
+  trControl = trainControl(method = "cv", indexOut = train_index),
+  tuneGrid = expand.grid(
+    nrounds = 20,
+    max_depth = 3,
+    colsample_bytree = .6,
+    eta = 0.1,
+    gamma=0,
+    min_child_weight = 1,
+    subsample = .5
+  ))
+xgboostFit
+```
+
+The outcomes show that the model attained very good Kappa (0.96) and accuracy (0.97).
+
+```{r}
+xgboostFit$finalModel
+```
+
+### **Artificial Neural Network**
+
+The functioning of biological neural networks in the human brain served as the paradigm for Artificial Neural Networks (ANNs), which are computational models. Artificial neural networks (ANNs) are used in machine learning and artificial intelligence for a range of tasks, such as pattern recognition, regression analysis, classification, and decision making.
+
+```{r}
+nnetFit <- Zoo_train |> train(type ~ .,
+  method = "nnet",
+  data = _,
+    tuneLength = 5,
+    trControl = trainControl(method = "cv", indexOut = train_index),
+  trace = FALSE)
+nnetFit
+```
+
+A number of combinations of "size" and "decay" values are tested during hyperparameter tweaking to see which combination produces the best model performance. The model's final values are size = 3 and decay = 0.01; accuracy was used to select the optimal model.
+
+```{r}
+nnetFit$finalModel
+```
+
+## **Comparing Models**
+
+Gather the model performance metrics that were trained using the same set of data.
+
+```{r}
+resamps <- resamples(list(
+  ctree = ctreeFit,
+  C45 = C45Fit,
+  SVM = svmFit,
+  KNN = knnFit,
+  rules = rulesFit,
+  randomForest = randomForestFit,
+  xgboost = xgboostFit,
+  NeuralNet = nnetFit
+    ))
+resamps
+```
+
+Calculate summary statistics
+
+```{r}
+summary(resamps)
+```
+
+The majority of models exhibit good performance, as evidenced by the accuracy values, which span from 0.7 to 1.00, and the Kappa values, which span from 0.7 to 1.000.
+
+```{r}
+library(lattice)
+bwplot(resamps, layout = c(3, 1))
+```
+
+To compare the differences between the models, do an analysis. To ascertain if the differences are statistically significant, this entails computing and evaluating every pairwise difference that could exist for each metric. Multiple comparisons are handled using the Bonferroni correction in the default way. The upper triangle shows the differences that resulted, while the lower triangle shows the related p-values.
+
+```{r}
+difs <- diff(resamps)
+difs
+```
+
+```{r}
+summary(difs)
+```
+
+## **Applying the Chosen Model to the Test Data**
+
+With the data, most models perform about the same. Here, the random forest model is our choice.
+
+```{r}
+pr <- predict(randomForestFit, Zoo_test)
+pr
+```
+
+Calculate the confusion matrix for the held-out test data.
+
+```{r}
+confusionMatrix(pr, reference = Zoo_test$type)
+```
+
+## **Comparing Decision Boundaries of Popular Classification Techniques**
+
+Classifiers create boundaries so that different classes can be distinguished. Different classifiers provide different forms for these borders; some are completely linear. As such, certain classifiers may perform better on certain datasets. We display the decision boundaries produced by a number of popular classification techniques on this page.
+
+The decision boundary in the plot is shown by black lines, and the color's intensity reflects the categorization confidence. Evaluating the classifier at grid points that are uniformly spaced allows for this. It is noteworthy that even though the decision boundary is a straight line, employing a low resolution (in an attempt to speed up evaluation) can provide the impression of little steps.
+
+```{r}
+library(scales)
+library(tidyverse)
+library(ggplot2)
+library(caret)
+
+decisionplot <- function(model, data, class_var, 
+  predict_type = c("class", "prob"), resolution = 3 * 72) {
+  # resolution is set to 72 dpi if the image is rendered  3 inches wide. 
+  
+  y <- data |> pull(class_var)
+  x <- data |> dplyr::select(-all_of(class_var))
+  
+  # resubstitution accuracy
+  prediction <- predict(model, x, type = predict_type[1])
+  # LDA returns a list
+  if(is.list(prediction)) prediction <- prediction$class
+  prediction <- factor(prediction, levels = levels(y))
+  
+  cm <- confusionMatrix(data = prediction, 
+                        reference = y)
+  acc <- cm$overall["Accuracy"]
+  
+  # evaluate model on a grid
+  r <- sapply(x[, 1:2], range, na.rm = TRUE)
+  xs <- seq(r[1,1], r[2,1], length.out = resolution)
+  ys <- seq(r[1,2], r[2,2], length.out = resolution)
+  g <- cbind(rep(xs, each = resolution), rep(ys, time = resolution))
+  colnames(g) <- colnames(r)
+  g <- as_tibble(g)
+  
+  ### guess how to get class labels from predict
+  ### (unfortunately not very consistent between models)
+  cl <- predict(model, g, type = predict_type[1])
+  
+  # LDA returns a list
+  prob <- NULL
+  if(is.list(cl)) { 
+    prob <- cl$posterior
+    cl <- cl$class
+  } else
+    if(!is.na(predict_type[2]))
+      try(prob <- predict(model, g, type = predict_type[2]))
+  
+  # we visualize the difference in probability/score between the 
+  # winning class and the second best class.
+  # don't use probability if predict for the classifier does not support it.
+  max_prob <- 1
+  if(!is.null(prob))
+    try({
+      max_prob <- t(apply(prob, MARGIN = 1, sort, decreasing = TRUE))
+      max_prob <- max_prob[,1] - max_prob[,2]
+    }, silent = TRUE) 
+  
+  cl <- factor(cl, levels = levels(y))
+  
+  g <- g |> add_column(prediction = cl, probability = max_prob)
+  
+  ggplot(g, mapping = aes(
+    x = .data[[colnames(g)[1]]], y = .data[[colnames(g)[2]]])) +
+    geom_raster(mapping = aes(fill = prediction, alpha = probability)) +
+    geom_contour(mapping = aes(z = as.numeric(prediction)), 
+      bins = length(levels(cl)), linewidth = .5, color = "black") +
+    geom_point(data = data, mapping =  aes(
+      x = .data[[colnames(data)[1]]], 
+      y = .data[[colnames(data)[2]]],
+      shape = .data[[class_var]]), alpha = .7) + 
+    scale_alpha_continuous(range = c(0,1), limits = c(0,1), guide = "none") +  
+    labs(subtitle = paste("Training accuracy:", round(acc, 2))) +
+     theme_minimal(base_size = 14)
+}
+```
+
+### **Penguins Dataset**
+
+We utilize two of the Penguins dataset's dimensions for simpler display. On a map, contour lines represent the density like mountains.
+
+```{r}
+set.seed(1000)
+data("penguins")
+penguins <- as_tibble(penguins) |>
+  drop_na()
+
+### Three classes 
+### (note: MASS also has a select function which hides dplyr's select)
+x <- penguins |> dplyr::select(bill_length_mm, bill_depth_mm, species)
+x
+```
+
+```{r}
+ggplot(x, aes(x = bill_length_mm, y = bill_depth_mm, fill = species)) +  
+  stat_density_2d(geom = "polygon", aes(alpha = after_stat(level))) +
+  geom_point() +
+  theme_minimal(base_size = 14) +
+  labs(x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       fill = "Species",
+       alpha = "Density")
+```
+
+#### K-Nearest Neighbors Classifier
+
+For both classification and regression applications, K-Nearest Neighbors (KNN) is a straightforward, instance-based, non-parametric machine learning approach. With KNN, the class of a data point is predicted based on the classes of its closest neighbors in the classification process. The number of neighbors to take into account is specified by the user-defined parameter k.
+
+set the number of nearest neighbors to 1
+
+```{r}
+model <- x |> caret::knn3(species ~ ., data = _, k = 1)
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "kNN (1 neighbor)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+set the number of nearest neighbors to 3
+
+```{r}
+model <- x |> caret::knn3(species ~ ., data = _, k = 3)
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "kNN (3 neighbor)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+set the number of nearest neighbors to 9
+
+```{r}
+model <- x |> caret::knn3(species ~ ., data = _, k = 9)
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "kNN (9 neighbor)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+#### Naive Bayes Classifier
+
+The probabilistic machine learning algorithm Naive Bayes is based on the Bayes theorem. It is a straightforward and effective classification method that works especially well for spam filtering and text classification. Naive Bayes is a relatively simple algorithm that often yields surprising results in reality, especially when dealing with challenges that include high-dimensional feature fields.
+
+```{r}
+model <- x |> e1071::naiveBayes(species ~ ., data = _)
+decisionplot(model, x, class_var = "species", 
+             predict_type = c("class", "raw")) + 
+  labs(title = "Naive Bayes",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction") 
+```
+
+#### Linear Discriminant Analysis
+
+A supervised machine learning technique for dimensionality reduction and classification is called linear discriminant analysis (LDA). This approach is especially helpful in solving multi-class classification issues and is grounded in statistical concepts. The way LDA operates is by identifying linear feature combinations that best distinguish between various data classes.
+
+```{r}
+model <- x |> MASS::lda(species ~ ., data = _)
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "LDA",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+#### Multinomial Logistic Regression (implemented in nnet)
+
+An expansion of binary logistic regression designed to address multi-class classification issues is multinomial logistic regression, also referred to as softmax regression. The algorithm in this method predicts the likelihood of each class, and the outcome variable may take more than two classes. Next, for a particular input, the class with the highest probability is designated as the predicted class.
+
+```{r}
+model <- x |> nnet::multinom(species ~., data = _)
+```
+
+```{r}
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "Multinomial Logistic Regression",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+#### Decision Trees
+
+Suitable for both regression and classification applications, decision trees are supervised machine learning techniques. Recursively dividing the data into subsets according to the values of input features is how they operate. The algorithm can forecast data points that are yet to be seen or in the future because each partition is predicated on a decision rule that was learned from the training set.
+
+```{r}
+model <- x |> rpart::rpart(species ~ ., data = _)
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "CART",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> rpart::rpart(species ~ ., data = _,
+  control = rpart.control(cp = 0.001, minsplit = 1))
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "CART (overfitting)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> C50::C5.0(species ~ ., data = _)
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "C5.0",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> randomForest::randomForest(species ~ ., data = _)
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "Random Forest",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+#### SVM
+
+Support Vector Machines (SVM) is a powerful supervised machine learning algorithm used for both classification and regression tasks. SVM is particularly effective in high-dimensional spaces and is well-suited for tasks where the data has clear margins of separation between classes.
+
+```{r}
+model <- x |> e1071::svm(species ~ ., data = _, kernel = "linear")
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "SVM (linear kernel)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> e1071::svm(species ~ ., data = _, kernel = "radial")
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "SVM (radial kernel)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> e1071::svm(species ~ ., data = _, kernel = "polynomial")
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "SVM (polynomial kernel)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> e1071::svm(species ~ ., data = _, kernel = "sigmoid")
+decisionplot(model, x, class_var = "species") + 
+  labs(title = "SVM (sigmoid kernel)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+#### Single Layer Feed-forward Neural Networks
+
+A Single Feed-forward Layer The most basic kind of artificial neural networks is the neural network, often called a perceptron. There are no hidden layers; there is just the output layer. You can use this simple neural network model for tasks involving binary classification.
+
+```{r}
+model <-x |> nnet::nnet(species ~ ., data = _, size = 1, trace = FALSE)
+decisionplot(model, x, class_var  = "species", 
+  predict_type = c("class", "raw")) + 
+  labs(title = "NN (1 neuron)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+**`The number of hidden neurons in a single hidden layer of the neural network is specified by its size.`**
+
+```{r}
+model <-x |> nnet::nnet(species ~ ., data = _, size = 2, trace = FALSE)
+decisionplot(model, x, class_var  = "species", 
+  predict_type = c("class", "raw")) + 
+  labs(title = "NN (2 neurons)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+```{r}
+model <-x |> nnet::nnet(species ~ ., data = _, size = 4, trace = FALSE)
+decisionplot(model, x, class_var  = "species", 
+  predict_type = c("class", "raw")) + 
+  labs(title = "NN (4 neurons)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+```{r}
+model <-x |> nnet::nnet(species ~ ., data = _, size = 10, trace = FALSE)
+decisionplot(model, x, class_var  = "species", 
+  predict_type = c("class", "raw")) + 
+  labs(title = "NN (10 neurons)",
+       x = "Bill length (mm)",
+       y = "Bill depth (mm)",
+       shape = "Species",
+       fill = "Prediction")
+```
+
+### **Circle Dataset**
+
+```{r}
+set.seed(1000)
+
+x <- mlbench::mlbench.circle(500)
+###x <- mlbench::mlbench.cassini(500)
+###x <- mlbench::mlbench.spirals(500, sd = .1)
+###x <- mlbench::mlbench.smiley(500)
+x <- cbind(as.data.frame(x$x), factor(x$classes))
+colnames(x) <- c("x", "y", "class")
+x <- as_tibble(x)
+x
+```
+
+```{r}
+ggplot(x, aes(x = x, y = y, color = class)) + 
+  geom_point() +
+  theme_minimal(base_size = 14)
+```
+
+#### K-Nearest Neighbors Classifier
+
+A straightforward, instance-based, non-parametric machine learning technique called K-Nearest Neighbors (KNN) is utilized for both regression and classification applications. When classifying data, KNN uses the classes of its closest neighbors to forecast the class of a given data point. The number of neighbors to take into account is specified by the user-defined parameter k.
+
+```{r}
+model <- x |> caret::knn3(class ~ ., data = _, k = 1)
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "kNN (1 neighbor)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> caret::knn3(class ~ ., data = _, k = 10)
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "kNN (10 neighbor)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+#### Naive Bayes Classifier
+
+The probabilistic machine learning algorithm Naive Bayes is based on the Bayes theorem. It is a straightforward and effective classification method that works especially well for spam filtering and text classification. Naive Bayes is a relatively simple algorithm that often yields surprising results in reality, especially when dealing with challenges that include high-dimensional feature fields.
+
+```{r}
+model <- x |> e1071::naiveBayes(class ~ ., data = _)
+decisionplot(model, x, class_var = "class", 
+  predict_type = c("class", "raw")) + 
+  labs(title = "naive Bayes",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+#### Linear Discriminant Analysis
+
+A supervised machine learning technique for dimensionality reduction and classification is called linear discriminant analysis (LDA). This approach is especially helpful in solving multi-class classification issues and is grounded in statistical concepts. The way LDA operates is by identifying linear feature combinations that best distinguish between various data classes.
+
+```{r}
+model <- x |> MASS::lda(class ~ ., data = _)
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "LDA",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+#### Logistic Regression (implemented in nnet)
+
+A statistical technique called logistic regression is applied to binary classification problems, in which the dependent variable has two classes. When used to multi-class classification issues in machine learning, logistic regression is frequently employed using methods such as one-versus-one (OvO) or one-versus-rest (OvR). An instance's likelihood of belonging to a specific class is predicted by the logistic regression model.
+
+```{r}
+model <- x |> nnet::multinom(class ~., data = _)
+```
+
+```{r}
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "Multinomial Logistic Regression",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+#### Decision Trees
+
+Adaptable supervised machine learning techniques called decision trees are applied to both regression and classification problems. They function by dividing the data into subsets recursively according to the supplied feature values. The method is able to forecast values for unknown or future data points since each partition is based on a decision rule that was learned from the training set.
+
+```{r}
+model <- x |> rpart::rpart(class ~ ., data = _)
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "CART",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> rpart::rpart(class ~ ., data = _,
+  control = rpart.control(cp = 0.001, minsplit = 1))
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "CART (overfitting)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+```{r}
+model <- x |> C50::C5.0(class ~ ., data = _)
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "C5.0",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+```{r}
+library(randomForest)
+model <- x |> randomForest(class ~ ., data = _)
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "Random Forest",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+#### SVM
+
+A potent supervised machine learning approach for both regression and classification applications is called Support Vector Machines (SVM). SVM works very effectively in high-dimensional spaces and is a good fit for situations where there are distinct class boundaries in the data.
+
+```{r}
+model <- x |> e1071::svm(class ~ ., data = _, kernel = "linear")
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "SVM (linear kernel)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+Support Vector Machines (SVM) are a powerful supervised machine learning technique for both regression and classification applications. SVM performs exceptionally well in high-dimensional spaces and is well suited for scenarios in which the data has well defined class boundaries.
+
+```{r}
+model <- x |> e1071::svm(class ~ ., data = _, kernel = "radial")
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "SVM (radial kernel)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+Support Vector Machines (SVM) frequently use the polynomial kernel to implicitly transfer non-linear data into a higher-dimensional space. One of the kernel functions for establishing non-linear decision boundaries is this one.
+
+```{r}
+model <- x |> e1071::svm(class ~ ., data = _, kernel = "polynomial")
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "SVM (polynomial kernel)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+The sigmoid kernel is an illustration of the kernel trick, which, like other kernel functions, enables SVM to implicitly translate data into a higher-dimensional space where it becomes separable linearly.
+
+```{r}
+model <- x |> e1071::svm(class ~ ., data = _, kernel = "sigmoid")
+decisionplot(model, x, class_var = "class") + 
+  labs(title = "SVM (sigmoid kernel)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+#### Single Layer Feed-forward Neural Networks
+
+A Single Feed-forward Layer The most basic kind of artificial neural networks is the neural network, often called a perceptron. There are no hidden layers; there is just the output layer. You can use this simple neural network model for tasks involving binary classification.
+
+```{r}
+model <-x |> nnet::nnet(class ~ ., data = _, size = 1, trace = FALSE)
+decisionplot(model, x, class_var = "class", 
+  predict_type = c("class")) + 
+  labs(title = "NN (1 neuron)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+```{r}
+model <-x |> nnet::nnet(class ~ ., data = _, size = 2, trace = FALSE)
+decisionplot(model, x, class_var = "class", 
+  predict_type = c("class")) + 
+  labs(title = "NN (2 neurons)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+```{r}
+model <-x |> nnet::nnet(class ~ ., data = _, size = 4, trace = FALSE)
+decisionplot(model, x, class_var = "class", 
+  predict_type = c("class")) + 
+  labs(title = "NN (4 neurons)",
+       shape = "Class",
+       fill = "Prediction")
+```
+
+```{r}
+model <-x |> nnet::nnet(class ~ ., data = _, size = 10, trace = FALSE)
+decisionplot(model, x, class_var = "class", 
+  predict_type = c("class")) + 
+  labs(title = "NN (10 neurons)",
+       shape = "Class",
+       fill = "Prediction")
+```
